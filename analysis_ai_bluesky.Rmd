@@ -1,0 +1,402 @@
+---
+title: "Finding the AI conversation on Bluesky"
+subtitle: "COMP3020 Social Web Analytics: exploratory phase"
+author: "Trung, Thu and Christan (add all three student IDs before submitting)"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+```{r knitr-setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 6.5, fig.height = 4.5)
+```
+
+# Design
+
+The topic is not fixed in advance. The collection is broad, the patterns come out of the
+text, and the focus is chosen from what the patterns show.
+
+- Phase 1: collect posts on AI and related terms, month by month, so the sample covers a
+  period rather than a single moment.
+- Phase 2: find patterns with word frequency, TF-IDF and clustering.
+- Phase 3: name the themes the clusters reveal and label every post with one.
+- Phase 4: track the themes over time, then choose the focus topic for the poster.
+
+Only the methods needed for these phases are included. Network analysis and link analysis
+follow once the topic is chosen.
+
+# Setup
+
+## Loading Packages
+
+```{r packages}
+# Functions for retrieving Bluesky posts.
+library(atrrr)
+```
+
+## Authenticating with Bluesky
+
+```{r auth}
+# Authorize the API to load dataset
+ bsky_app_pw <-"vc7d-2zda-wr7q-oyb3"
+ auth(user = "trungphanm.bsky.social", password = bsky_app_pw)
+```
+
+## Checking the Search Arguments
+
+```{r check-args}
+# The monthly collection needs both since and until. Confirm your version has them.
+args(search_skeet)
+```
+
+If `until` is not listed, remove it from the search call below and filter on the post
+timestamp afterwards. The monthly windows will then be uneven, because `sort = "latest"`
+returns the most recent posts overall rather than the most recent inside a window.
+
+# Phase 1: Collecting Bluesky Posts
+
+## Searching Month by Month
+
+Each phrase is searched once per month. Bluesky search takes one plain phrase at a time, so
+several phrases are used to reach the whole conversation rather than one corner of it.
+
+The collection is switched off once the data is saved. Set `eval=TRUE` on this chunk and the
+next one to collect again.
+
+```{r collect, eval=FALSE}
+# WARNING: Bluesky content is uncontrolled and may contain offensive language.
+queries = c("AI", "artificial intelligence", "generative AI", "ChatGPT")
+
+# Bluesky opened to the public in February 2024, so earlier windows return nothing.
+months = seq(as.Date("2024-01-01"), as.Date("2026-10-01"), by = "month")
+per_call = 500
+
+all_posts = NULL
+
+for (q in queries) {
+  for (i in 1:(length(months) - 1)) {
+    res = search_skeet(q,
+                       sort = "latest",
+                       since = as.character(months[i]),
+                       until = as.character(months[i + 1]),
+                       limit = per_call
+                       )
+    if (nrow(res) > 0) {
+      res$query = q
+      res$window = format(months[i], "%Y-%m")
+      all_posts = rbind(all_posts, res)
+    }
+  }
+}
+```
+
+## Filtering and Saving
+
+```{r filter-save, eval=FALSE}
+# A post can match more than one phrase.
+all_posts = all_posts[!duplicated(all_posts$uri), ]
+
+# Keep English posts that contain text.
+is_en = sapply(all_posts$langs, function(x) isTRUE(any(unlist(x) == "en")))
+has_text = nchar(trimws(all_posts$text)) > 0
+all_posts = all_posts[is_en & has_text, ]
+
+save(all_posts, file = "AI_bluesky.RData")
+```
+
+## Loading the Saved Data
+
+```{r load-data}
+load("AI_bluesky.RData")
+
+nrow(all_posts)
+names(all_posts)
+```
+
+## Checking the Collection
+
+```{r check-collection}
+# Posts per phrase and per window. Any cell at the limit was cut off.
+table(all_posts$query)
+table(all_posts$window)
+```
+
+# Phase 2: Preparing the Text
+
+## Creating the Corpus
+
+```{r corpus}
+library(tm)
+library(SnowballC)
+
+posts.text = all_posts$text
+posts.corpus = Corpus(VectorSource(posts.text))
+
+# Convert to ASCII to reduce encoding inconsistencies.
+posts.corpus = tm_map(posts.corpus, function(x) iconv(x, to = "ASCII", sub = " "))
+```
+
+## Pre-processing the Corpus
+
+```{r preprocess}
+# Remove links first so domain fragments do not survive as terms.
+remove_urls = content_transformer(function(x) {
+  gsub("https?://\\S+|www\\.\\S+", " ", x, perl = TRUE)
+})
+posts.corpus = tm_map(posts.corpus, remove_urls)
+
+posts.corpus = tm_map(posts.corpus, removeNumbers)
+posts.corpus = tm_map(posts.corpus, removePunctuation)
+posts.corpus = tm_map(posts.corpus, stripWhitespace)
+posts.corpus = tm_map(posts.corpus, tolower)
+
+# Only the words present in every post by construction are removed. Product names
+# such as chatgpt are kept, because which tools people name is part of the pattern.
+custom_words = c("ai", "artificial", "intelligence", "amp")
+posts.corpus = tm_map(posts.corpus, removeWords,
+                      c(stopwords("english"), custom_words))
+
+posts.corpus = tm_map(posts.corpus, stemDocument)
+```
+
+# Phase 2: Finding Patterns
+
+## Creating the Document-Term Matrix
+
+```{r dtm}
+posts.dtm = DocumentTermMatrix(posts.corpus)
+dim(posts.dtm)
+
+# With this many posts the full matrix cannot be densified, so the sparsest terms
+# are dropped first. 0.99 keeps terms appearing in at least one percent of posts.
+posts.dtm = removeSparseTerms(posts.dtm, 0.99)
+posts.matrix = as.matrix(posts.dtm)
+dim(posts.matrix)
+```
+
+## Top Terms by Frequency
+
+```{r top-terms}
+w = colSums(posts.matrix)
+o = order(w, decreasing = TRUE)[1:30]
+colnames(posts.matrix)[o]
+```
+
+## Top Terms by TF-IDF
+
+```{r tfidf}
+# Transpose the reduced matrix rather than rebuilding it from the corpus.
+posts.tdm = t(posts.dtm)
+
+posts.wtdm = weightTfIdf(posts.tdm)
+posts.weighted.tdm = as.matrix(posts.wtdm)
+
+sums = rowSums(posts.weighted.tdm)
+o = order(sums, decreasing = TRUE)[1:30]
+names(sums)[o]
+```
+
+## Word Clouds
+
+```{r wordcloud-raw, fig.height=5.5}
+library(wordcloud)
+
+freqs = rowSums(as.matrix(posts.tdm))
+
+wordcloud(names(freqs), freqs,
+          random.order = FALSE, min.freq = 20, max.words = 150,
+          colors = brewer.pal(8, "Dark2"), scale = c(3, 0.5))
+title("Unweighted term frequencies")
+```
+
+```{r wordcloud-weighted, fig.height=5.5}
+freqsw = rowSums(posts.weighted.tdm)
+
+wordcloud(names(freqsw), freqsw,
+          random.order = FALSE, min.freq = 0, max.words = 150,
+          colors = brewer.pal(8, "Dark2"), scale = c(2.5, 0.4))
+title("TF-IDF weighted terms")
+```
+
+## Clustering a Sample of Posts
+
+Cosine distance needs an N by N matrix and MDS decomposes it, so the cost grows with the
+square of the post count. The frequency work above uses every post. The clustering uses a
+random sample.
+
+```{r cluster-sample}
+set.seed(3020)
+
+max_cluster_posts = 2000
+keep = sample(ncol(posts.wtdm), min(max_cluster_posts, ncol(posts.wtdm)))
+
+# Clustering functions expect documents in rows.
+posts.wmatrix = t(as.matrix(posts.wtdm[, keep]))
+
+# Cleaning leaves some posts with no terms; zero rows carry no distance information.
+empties = which(rowSums(abs(posts.wmatrix)) == 0)
+if (length(empties) > 0) posts.wmatrix = posts.wmatrix[-empties, ]
+
+dim(posts.wmatrix)
+```
+
+```{r cosine-mds}
+# Normalise each document vector to unit length, then use cosine distance.
+norm.posts.matrix = posts.wmatrix / sqrt(rowSums(posts.wmatrix^2))
+D = dist(norm.posts.matrix, method = "euclidean")^2 / 2
+
+# k-means only supports Euclidean geometry, so MDS projects the cosine distances.
+N = nrow(posts.wmatrix)
+mds.posts.matrix = cmdscale(D, k = min(100, N - 1))
+dim(mds.posts.matrix)
+```
+
+```{r elbow}
+n = 12
+SSW = rep(0, n)
+for (a in 1:n) {
+  K = kmeans(mds.posts.matrix, a, nstart = 10)
+  SSW[a] = K$tot.withinss
+}
+
+plot(1:n, SSW, type = "b",
+     xlab = "Number of clusters", ylab = "Within-cluster sum of squares")
+```
+
+```{r kmeans}
+# Read the elbow from the plot above before fixing this value.
+number.of.clusters = 5
+
+K = kmeans(mds.posts.matrix, number.of.clusters, nstart = 20)
+table(K$cluster)
+
+mds2.posts.matrix = cmdscale(D, k = 2)
+plot(mds2.posts.matrix, col = K$cluster, pch = 19, cex = 0.5,
+     xlab = "MDS dimension 1", ylab = "MDS dimension 2",
+     main = "Sampled posts clustered by cosine distance")
+```
+
+```{r cluster-terms}
+# Average each term's weight across a cluster. The highest means describe it, and
+# they become the starting dictionary for the themes.
+top_per_cluster = 10
+theme_terms = list()
+
+for (cluster.number in 1:number.of.clusters) {
+  clusterpostsId = which(K$cluster == cluster.number)
+  clusterTermWeight = colMeans(posts.wmatrix[clusterpostsId, , drop = FALSE])
+  o = order(clusterTermWeight, decreasing = TRUE)[1:top_per_cluster]
+  stems = colnames(posts.wmatrix)[o]
+
+  theme_terms[[paste0("cluster", cluster.number)]] = stems
+  cat("Cluster", cluster.number, "(", length(clusterpostsId), "posts):", stems, "\n")
+}
+```
+
+# Phase 3: Naming the Themes
+
+The dictionary comes from the clusters above, so the themes are taken from the data rather
+than assumed. Read the cluster terms, then give each cluster a name.
+
+```{r theme-names}
+# Rename once the cluster terms have been read, for example:
+# names(theme_terms) = c("work", "art", "study", "tools", "policy")
+
+# Stems shared by several clusters cannot separate themes, so drop them.
+all_stems = unlist(theme_terms)
+shared = names(which(table(all_stems) > 1))
+theme_terms = lapply(theme_terms, function(x) setdiff(x, shared))
+
+theme_terms
+```
+
+```{r themes}
+# A post takes the first theme it matches, so the order of the list matters.
+cleaned.text = sapply(posts.corpus, as.character)
+
+theme = rep("other", length(cleaned.text))
+for (nm in names(theme_terms)) {
+  stems = theme_terms[[nm]]
+  if (length(stems) == 0) next
+  pattern = paste0("\\b(", paste(stems, collapse = "|"), ")")
+  hit = grepl(pattern, cleaned.text)
+  theme[hit & theme == "other"] = nm
+}
+
+table(theme)
+```
+
+# Phase 4: Tracking the Themes Over Time
+
+## Posts per Month
+
+```{r trend-volume}
+# Column names differ between atrrr versions, so resolve the timestamp first.
+stamp = NULL
+if ("created_at" %in% names(all_posts)) stamp = all_posts$created_at
+if (is.null(stamp) && "indexed_at" %in% names(all_posts)) stamp = all_posts$indexed_at
+if (is.null(stamp) && "post_data" %in% names(all_posts)) {
+  stamp = sapply(all_posts$post_data, function(x) {
+    v = unlist(x)
+    hit = grep("^[0-9]{4}-[0-9]{2}-[0-9]{2}T", v, value = TRUE)
+    if (length(hit) > 0) hit[1] else NA_character_
+  })
+}
+
+all_posts$month = if (is.null(stamp)) NA_character_ else
+  format(as.Date(substr(stamp, 1, 10)), "%Y-%m")
+
+# Fall back to the search window if no timestamp survived.
+if (all(is.na(all_posts$month))) all_posts$month = all_posts$window
+
+sum(is.na(all_posts$month))
+
+months.seen = sort(unique(all_posts$month))
+counts = table(factor(all_posts$month, levels = months.seen))
+
+plot(seq_along(counts), as.numeric(counts), type = "b",
+     xaxt = "n", xlab = "", ylab = "Posts collected",
+     main = "Posts collected per month")
+axis(1, at = seq_along(counts), labels = names(counts), las = 2, cex.axis = 0.7)
+```
+
+Volume here reflects the collection limit as much as the conversation, so any month sitting
+at the cap cannot be read as a real total. The share plot below is the honest version.
+
+## Theme Share per Month
+
+```{r trend-share}
+tab = table(factor(all_posts$month, levels = months.seen), theme)
+share = prop.table(tab, 1)
+
+matplot(share, type = "b", pch = 1, lty = 1:ncol(share), col = 1:ncol(share),
+        xaxt = "n", xlab = "", ylab = "Share of posts",
+        main = "Theme share of the AI conversation")
+axis(1, at = seq_len(nrow(share)), labels = rownames(share), las = 2, cex.axis = 0.7)
+legend("topleft", colnames(share), col = 1:ncol(share), lty = 1:ncol(share),
+       pch = 1, cex = 0.7, bty = "n")
+
+round(share, 3)
+```
+
+# What to Decide Next
+
+- Choose one or two themes that hold enough posts and show movement across the months.
+- Run a focused collection on those themes with narrower phrases, using the same monthly loop.
+- Add the network work from Modules 7 and 8 on the chosen theme: seed account, follows,
+  centrality and PageRank.
+
+# Limitations
+
+- Each search is capped per month and per phrase, so counts measure collection effort as much
+  as conversation volume. Read shares, not totals.
+- Within a capped month, `sort = "latest"` returns posts from the end of that month, so the
+  sample inside a capped window is not random.
+- Only English posts are kept, and Bluesky users are not a cross-section of the public.
+- Stemming merges word forms, so themes and cluster terms read as fragments.
+- Themes are built from the top terms of a 2,000 post sample, then applied to every post.
+- Theme labelling is first match wins, so overlapping posts land in the earlier theme. Report
+  how many posts fall into "other".
