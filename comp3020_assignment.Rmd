@@ -34,7 +34,7 @@ library(knitr)       # tables
 ## Authenticating with Bluesky
 
 ```{r auth}
-bsky_app_pw <- "vc7d-2zda-wr7q-oyb3"
+bsky_app_pw = "vc7d-2zda-wr7q-oyb3"
 auth(user = "trungphanm.bsky.social", password = bsky_app_pw)
 ```
 
@@ -49,16 +49,16 @@ not repeatedly hit the API. Delete that file and re-knit to trigger a fresh live
 
 ```{r collect, eval=FALSE}
 # WARNING: Bluesky content is uncontrolled and may contain offensive language.
-queries <- c("AI", "artificial intelligence", "generative AI", "ChatGPT")
+queries = c("AI", "artificial intelligence", "generative AI", "ChatGPT")
 
 # Twelve most recent full months at the time of writing.
-months <- seq(as.Date("2025-09-01"), as.Date("2026-09-01"), by = "month")
-per_call <- 400
+months = seq(as.Date("2025-09-01"), as.Date("2026-09-01"), by = "month")
+per_call = 400
 
-all_posts <- NULL
+all_posts = NULL
 for (q in queries) {
   for (i in 1:(length(months) - 1)) {
-    res <- tryCatch(
+    res = tryCatch(
       search_skeet(q, sort = "latest",
                    since = as.character(months[i]),
                    until = as.character(months[i + 1]),
@@ -66,26 +66,26 @@ for (q in queries) {
       error = function(e) NULL
     )
     if (!is.null(res) && nrow(res) > 0) {
-      res$query <- q
-      res$window <- format(months[i], "%Y-%m")
-      all_posts <- rbind(all_posts, res)
+      res$query = q
+      res$window = format(months[i], "%Y-%m")
+      all_posts = rbind(all_posts, res)
     }
   }
 }
 
 # A post can match more than one phrase.
-all_posts <- all_posts[!duplicated(all_posts$uri), ]
+all_posts = all_posts[!duplicated(all_posts$uri), ]
 
 # Keep English posts that contain text.
-is_en <- sapply(all_posts$langs, function(x) isTRUE(any(unlist(x) == "en")))
-has_text <- nchar(trimws(all_posts$text)) > 0
-all_posts <- all_posts[is_en & has_text, ]
+is_en = sapply(all_posts$langs, function(x) isTRUE(any(unlist(x) == "en")))
+has_text = nchar(trimws(all_posts$text)) > 0
+all_posts = all_posts[is_en & has_text, ]
 
 save(all_posts, file = "AI_bluesky.RData")
 ```
 
 ```{r load-data}
-data_file <- "AI_bluesky.RData"
+data_file = "AI_bluesky.RData"
 if (!file.exists(data_file)) {
   stop("AI_bluesky.RData not found. Run the collect chunk above (set eval=TRUE) first.")
 }
@@ -122,7 +122,7 @@ received differently by the audience.
 ## Choosing the Test
 
 ```{r hyp-groups}
-all_posts$group <- ifelse(all_posts$query == "ChatGPT", "ChatGPT", "General AI terms")
+all_posts$group = ifelse(all_posts$query == "ChatGPT", "ChatGPT", "General AI terms")
 table(all_posts$group)
 ```
 
@@ -148,7 +148,7 @@ so it is the appropriate test for this comparison.
 ## Running the Test
 
 ```{r hyp-summary}
-summary_tab <- all_posts %>%
+summary_tab = all_posts %>%
   group_by(group) %>%
   summarise(n = n(),
             median_likes = median(like_count),
@@ -166,10 +166,10 @@ ggplot(all_posts, aes(x = group, y = like_count + 1)) +
 ```
 
 ```{r hyp-test}
-wt <- wilcox.test(like_count ~ group, data = all_posts, exact = FALSE, conf.int = TRUE)
+wt = wilcox.test(like_count ~ group, data = all_posts, exact = FALSE, conf.int = TRUE)
 wt
 
-cd <- cliff.delta(like_count ~ group, data = all_posts)
+cd = cliff.delta(like_count ~ group, data = all_posts)
 cd
 ```
 
@@ -201,9 +201,9 @@ removed exact duplicate URIs (a post can match more than one search phrase). Two
 need addressing before the text can be analysed:
 
 ```{r clean-dupes}
-n_before <- nrow(all_posts)
-all_posts <- all_posts[!duplicated(all_posts$text), ]
-n_after_dedupe <- nrow(all_posts)
+n_before = nrow(all_posts)
+all_posts = all_posts[!duplicated(all_posts$text), ]
+n_after_dedupe = nrow(all_posts)
 ```
 
 - **Repeated text.** `r n_before - n_after_dedupe` posts share exactly the same text as an
@@ -223,61 +223,61 @@ That leaves `r n_after_dedupe` posts for the text analysis.
 ## Building the Corpus
 
 ```{r corpus}
-posts.text <- all_posts$text
-posts.corpus <- Corpus(VectorSource(posts.text))
+posts.text = all_posts$text
+posts.corpus = Corpus(VectorSource(posts.text))
 
 # Convert to ASCII to reduce encoding inconsistencies (emoji, curly quotes, etc.).
-posts.corpus <- tm_map(posts.corpus, function(x) iconv(x, to = "ASCII", sub = " "))
+posts.corpus = tm_map(posts.corpus, function(x) iconv(x, to = "ASCII", sub = " "))
 ```
 
 ## Pre-processing
 
 ```{r preprocess}
 # Remove links first so domain fragments do not survive as terms.
-remove_urls <- content_transformer(function(x) {
+remove_urls = content_transformer(function(x) {
   gsub("https?://\\S+|www\\.\\S+", " ", x, perl = TRUE)
 })
-posts.corpus <- tm_map(posts.corpus, remove_urls)
+posts.corpus = tm_map(posts.corpus, remove_urls)
 
-posts.corpus <- tm_map(posts.corpus, removeNumbers)
-posts.corpus <- tm_map(posts.corpus, removePunctuation)
-posts.corpus <- tm_map(posts.corpus, stripWhitespace)
-posts.corpus <- tm_map(posts.corpus, tolower)
+posts.corpus = tm_map(posts.corpus, removeNumbers)
+posts.corpus = tm_map(posts.corpus, removePunctuation)
+posts.corpus = tm_map(posts.corpus, stripWhitespace)
+posts.corpus = tm_map(posts.corpus, tolower)
 
 # Search terms are removed because they are common by construction, not by content.
 # Punctuation is stripped before stopwords are removed, so contractions such as
 # "don't" become "dont" and survive the standard stopword list; those remnants, plus
 # a handful of generic filler words identified after inspecting an initial run of the
 # top-term list below, are added so the remaining terms carry more topical content.
-custom_words <- c("ai", "artificial", "intelligence", "amp",
+custom_words = c("ai", "artificial", "intelligence", "amp",
                    "dont", "im", "ive", "youre", "theyre", "cant", "wont", "didnt", "isnt",
                    "just", "like", "really", "know", "get", "got", "one", "thing",
                    "say", "said", "also", "much", "many", "even", "still", "going", "gonna")
-posts.corpus <- tm_map(posts.corpus, removeWords, c(stopwords("english"), custom_words))
+posts.corpus = tm_map(posts.corpus, removeWords, c(stopwords("english"), custom_words))
 
-posts.corpus <- tm_map(posts.corpus, stemDocument)
+posts.corpus = tm_map(posts.corpus, stemDocument)
 ```
 
 ## Representing the Text
 
 ```{r dtm}
-posts.dtm <- DocumentTermMatrix(posts.corpus)
+posts.dtm = DocumentTermMatrix(posts.corpus)
 dim(posts.dtm)
 
 # Some short posts (e.g. a bare "AI" mention, or one that is mostly emoji/mentions)
 # have no terms left after cleaning; these carry no distance/frequency information
 # and are unsuitable records for the analyses below, so they are dropped here.
-doc_lengths <- slam::row_sums(posts.dtm)
-empty_docs <- which(doc_lengths == 0)
+doc_lengths = slam::row_sums(posts.dtm)
+empty_docs = which(doc_lengths == 0)
 length(empty_docs)
 
-posts.dtm <- posts.dtm[doc_lengths > 0, ]
-all_posts <- all_posts[doc_lengths > 0, ]
+posts.dtm = posts.dtm[doc_lengths > 0, ]
+all_posts = all_posts[doc_lengths > 0, ]
 
 # With this many posts the full matrix cannot be densified, so the sparsest terms
 # are dropped first. 0.99 keeps terms appearing in at least one percent of posts.
-posts.dtm <- removeSparseTerms(posts.dtm, 0.99)
-posts.matrix <- as.matrix(posts.dtm)
+posts.dtm = removeSparseTerms(posts.dtm, 0.99)
+posts.matrix = as.matrix(posts.dtm)
 dim(posts.matrix)
 ```
 
@@ -291,7 +291,7 @@ make the matrix impossible to work with densely.
 ## Textual Characteristics
 
 ```{r post-length}
-word_counts <- sapply(strsplit(trimws(posts.text), "\\s+"), length)
+word_counts = sapply(strsplit(trimws(posts.text), "\\s+"), length)
 summary(word_counts)
 ```
 
@@ -310,9 +310,9 @@ clustering in the next section, since short documents give k-means less signal t
 ## Frequent Words
 
 ```{r top-terms}
-w <- colSums(posts.matrix)
-o <- order(w, decreasing = TRUE)[1:20]
-top_terms <- data.frame(term = colnames(posts.matrix)[o], frequency = w[o])
+w = colSums(posts.matrix)
+o = order(w, decreasing = TRUE)[1:20]
+top_terms = data.frame(term = colnames(posts.matrix)[o], frequency = w[o])
 kable(top_terms, row.names = FALSE, caption = "Top 20 terms by raw frequency")
 ```
 
@@ -324,7 +324,7 @@ ggplot(top_terms, aes(x = reorder(term, frequency), y = frequency)) +
 ```
 
 ```{r wordcloud-raw, fig.height=5.5, fig.cap="Word cloud of unweighted term frequencies"}
-freqs <- colSums(posts.matrix)
+freqs = colSums(posts.matrix)
 wordcloud(names(freqs), freqs,
           random.order = FALSE, min.freq = 20, max.words = 150,
           colors = brewer.pal(8, "Dark2"), scale = c(3, 0.5))
@@ -353,8 +353,8 @@ up-weights terms that are distinctive of a smaller set of posts, which is what a
 topics.
 
 ```{r tfidf}
-posts.tdm <- t(posts.dtm)
-posts.wtdm <- weightTfIdf(posts.tdm)
+posts.tdm = t(posts.dtm)
+posts.wtdm = weightTfIdf(posts.tdm)
 ```
 
 Pairwise-distance clustering needs an $N \times N$ distance matrix, so cost grows with the square
@@ -363,16 +363,16 @@ representative cross-section of the twelve-month collection.
 
 ```{r cluster-sample}
 set.seed(3020)
-max_cluster_posts <- 1500
-keep <- sample(ncol(posts.wtdm), min(max_cluster_posts, ncol(posts.wtdm)))
+max_cluster_posts = 1500
+keep = sample(ncol(posts.wtdm), min(max_cluster_posts, ncol(posts.wtdm)))
 
-posts.wmatrix <- t(as.matrix(posts.wtdm[, keep]))   # documents in rows
-sample_posts <- all_posts[keep, ]
+posts.wmatrix = t(as.matrix(posts.wtdm[, keep]))   # documents in rows
+sample_posts = all_posts[keep, ]
 
-empties <- which(rowSums(abs(posts.wmatrix)) == 0)
+empties = which(rowSums(abs(posts.wmatrix)) == 0)
 if (length(empties) > 0) {
-  posts.wmatrix <- posts.wmatrix[-empties, ]
-  sample_posts <- sample_posts[-empties, ]
+  posts.wmatrix = posts.wmatrix[-empties, ]
+  sample_posts = sample_posts[-empties, ]
 }
 dim(posts.wmatrix)
 ```
@@ -387,11 +387,11 @@ vectors; $k$-means itself only operates in Euclidean space, so classical MDS is 
 distance matrix into coordinates it can cluster.
 
 ```{r cosine-mds}
-norm.posts.matrix <- posts.wmatrix / sqrt(rowSums(posts.wmatrix^2))
-D <- dist(norm.posts.matrix, method = "euclidean")^2 / 2
+norm.posts.matrix = posts.wmatrix / sqrt(rowSums(posts.wmatrix^2))
+D = dist(norm.posts.matrix, method = "euclidean")^2 / 2
 
-N <- nrow(posts.wmatrix)
-mds.posts.matrix <- cmdscale(D, k = min(100, N - 1))
+N = nrow(posts.wmatrix)
+mds.posts.matrix = cmdscale(D, k = min(100, N - 1))
 dim(mds.posts.matrix)
 ```
 
@@ -403,13 +403,13 @@ to their own cluster than to the nearest neighbouring cluster rather than just c
 overall spread has been reduced.
 
 ```{r elbow-silhouette}
-n <- 12
-SSW <- rep(0, n)
-sil <- rep(NA, n)
+n = 12
+SSW = rep(0, n)
+sil = rep(NA, n)
 for (a in 1:n) {
-  K_a <- kmeans(mds.posts.matrix, a, nstart = 10)
-  SSW[a] <- K_a$tot.withinss
-  if (a > 1) sil[a] <- mean(silhouette(K_a$cluster, D)[, 3])
+  K_a = kmeans(mds.posts.matrix, a, nstart = 10)
+  SSW[a] = K_a$tot.withinss
+  if (a > 1) sil[a] = mean(silhouette(K_a$cluster, D)[, 3])
 }
 
 par(mfrow = c(1, 2))
@@ -428,15 +428,15 @@ different themes (e.g. product news and personal backlash into one group); more 
 split existing themes into near-duplicates rather than revealing new ones.
 
 ```{r kmeans}
-number.of.clusters <- 6
-K <- kmeans(mds.posts.matrix, number.of.clusters, nstart = 25)
+number.of.clusters = 6
+K = kmeans(mds.posts.matrix, number.of.clusters, nstart = 25)
 table(K$cluster)
 ```
 
 ```{r viz-clusters, fig.cap="Sampled posts clustered by cosine distance, projected to two MDS dimensions"}
-mds2.posts.matrix <- cmdscale(D, k = 2)
-cluster_df <- data.frame(mds2.posts.matrix, cluster = factor(K$cluster))
-names(cluster_df)[1:2] <- c("dim1", "dim2")
+mds2.posts.matrix = cmdscale(D, k = 2)
+cluster_df = data.frame(mds2.posts.matrix, cluster = factor(K$cluster))
+names(cluster_df)[1:2] = c("dim1", "dim2")
 
 ggplot(cluster_df, aes(x = dim1, y = dim2, colour = cluster)) +
   geom_point(alpha = 0.6, size = 1.2) +
@@ -451,15 +451,15 @@ more tightly-worded sub-topics embedded in it.
 ## Cluster Themes
 
 ```{r cluster-terms}
-top_per_cluster <- 12
-theme_terms <- list()
+top_per_cluster = 12
+theme_terms = list()
 
 for (cluster.number in 1:number.of.clusters) {
-  ids <- which(K$cluster == cluster.number)
-  cluster_term_weight <- colMeans(posts.wmatrix[ids, , drop = FALSE])
-  o <- order(cluster_term_weight, decreasing = TRUE)[1:top_per_cluster]
-  stems <- colnames(posts.wmatrix)[o]
-  theme_terms[[paste0("cluster", cluster.number)]] <- stems
+  ids = which(K$cluster == cluster.number)
+  cluster_term_weight = colMeans(posts.wmatrix[ids, , drop = FALSE])
+  o = order(cluster_term_weight, decreasing = TRUE)[1:top_per_cluster]
+  stems = colnames(posts.wmatrix)[o]
+  theme_terms[[paste0("cluster", cluster.number)]] = stems
   cat("Cluster", cluster.number, "(", length(ids), "posts):", stems, "\n")
 }
 ```
@@ -474,7 +474,7 @@ table(K$cluster, sample_posts$query)
 ```{r cluster-examples}
 set.seed(3020)
 for (cluster.number in 1:number.of.clusters) {
-  ids <- which(K$cluster == cluster.number)
+  ids = which(K$cluster == cluster.number)
   cat("--- Cluster", cluster.number, "example posts ---\n")
   print(sample_posts$text[sample(ids, min(2, length(ids)))])
   cat("\n")
