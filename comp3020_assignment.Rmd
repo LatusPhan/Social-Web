@@ -1,0 +1,511 @@
+---
+title: "The AI Conversation on Bluesky"
+subtitle: "COMP3020 Social Web Analytics -- Hypothesis Testing, Text Analysis and Clustering"
+author: "Trung, Thu and Christan (add all three student IDs before submitting)"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  pdf_document:
+    toc: true
+    number_sections: false
+    latex_engine: xelatex
+---
+
+```{r knitr-setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 6.5, fig.height = 4.5)
+```
+
+
+
+## Loading Packages
+
+```{r packages}
+library(atrrr)       # Bluesky API access
+library(tm)          # corpus and document-term matrices
+library(SnowballC)   # stemming
+library(wordcloud)   # word cloud visualisation
+library(ggplot2)     # visualisations
+library(dplyr)       # data wrangling
+library(cluster)     # silhouette analysis
+library(effsize)     # Cliff's delta effect size
+library(knitr)       # tables
+```
+
+## Authenticating with Bluesky
+
+```{r auth}
+bsky_app_pw <- "vc7d-2zda-wr7q-oyb3"
+auth(user = "trungphanm.bsky.social", password = bsky_app_pw)
+```
+
+# Data
+
+## Collecting Posts
+
+The same monthly-window strategy as the exploratory script is used: each phrase is searched
+separately for each month, because Bluesky search accepts one plain phrase per call. The result
+is cached to `AI_bluesky.RData` after the first real download, so re-knitting this document does
+not repeatedly hit the API. Delete that file and re-knit to trigger a fresh live collection.
+
+```{r collect, eval=FALSE}
+# WARNING: Bluesky content is uncontrolled and may contain offensive language.
+queries <- c("AI", "artificial intelligence", "generative AI", "ChatGPT")
+
+# Twelve most recent full months at the time of writing.
+months <- seq(as.Date("2025-09-01"), as.Date("2026-09-01"), by = "month")
+per_call <- 400
+
+all_posts <- NULL
+for (q in queries) {
+  for (i in 1:(length(months) - 1)) {
+    res <- tryCatch(
+      search_skeet(q, sort = "latest",
+                   since = as.character(months[i]),
+                   until = as.character(months[i + 1]),
+                   limit = per_call),
+      error = function(e) NULL
+    )
+    if (!is.null(res) && nrow(res) > 0) {
+      res$query <- q
+      res$window <- format(months[i], "%Y-%m")
+      all_posts <- rbind(all_posts, res)
+    }
+  }
+}
+
+# A post can match more than one phrase.
+all_posts <- all_posts[!duplicated(all_posts$uri), ]
+
+# Keep English posts that contain text.
+is_en <- sapply(all_posts$langs, function(x) isTRUE(any(unlist(x) == "en")))
+has_text <- nchar(trimws(all_posts$text)) > 0
+all_posts <- all_posts[is_en & has_text, ]
+
+save(all_posts, file = "AI_bluesky.RData")
+```
+
+```{r load-data}
+data_file <- "AI_bluesky.RData"
+if (!file.exists(data_file)) {
+  stop("AI_bluesky.RData not found. Run the collect chunk above (set eval=TRUE) first.")
+}
+load(data_file)
+
+nrow(all_posts)
+table(all_posts$query)
+```
+
+This gives `r nrow(all_posts)` English-language posts collected live from Bluesky across four
+AI-related search phrases and twelve months, before any further cleaning.
+
+# 2.2 Hypothesis Testing
+
+## Research Question
+
+Two of the search phrases point at very different kinds of talk: **"ChatGPT"** names a specific,
+branded product, while **"AI"**, **"artificial intelligence"** and **"generative AI"** are used
+for more general discussion of the technology. A natural question for the overall investigation
+into what the AI conversation on Bluesky looks like is whether these two kinds of post are
+received differently by the audience.
+
+> **Research question:** Do posts that name a specific AI product (ChatGPT) receive a different
+> level of engagement, measured by the number of likes, than posts that discuss AI in more
+> general terms?
+
+## Hypotheses
+
+- $H_0$: The distribution of `like_count` is the same for ChatGPT-query posts and general-AI-query
+  posts (no location shift between the two groups).
+- $H_1$: The distribution of `like_count` differs between ChatGPT-query posts and general-AI-query
+  posts (two-sided).
+
+## Choosing the Test
+
+```{r hyp-groups}
+all_posts$group <- ifelse(all_posts$query == "ChatGPT", "ChatGPT", "General AI terms")
+table(all_posts$group)
+```
+
+```{r hyp-shape}
+ggplot(all_posts, aes(x = like_count)) +
+  geom_histogram(bins = 40) +
+  scale_x_continuous(trans = "log1p", breaks = c(0, 1, 5, 20, 100, 500, 2000)) +
+  facet_wrap(~ group, ncol = 1, scales = "free_y") +
+  labs(title = "Distribution of likes is heavily right-skewed with a large mass at zero",
+       x = "Likes (log1p scale)", y = "Number of posts")
+```
+
+`like_count` is a non-negative count with a median of `r median(all_posts$like_count)`, a mean of
+`r round(mean(all_posts$like_count), 1)`, and a maximum of `r max(all_posts$like_count)`. Most
+posts get very few or no likes, while a small number go viral, so the distribution is far from
+normal in both groups (the histogram above is on a log scale and still shows a long tail). An
+independent-samples $t$-test assumes approximately normal, equal-variance samples, which does not
+hold here. The **Wilcoxon rank-sum test (Mann-Whitney U test)**, covered in COMP3020 as the
+non-parametric alternative for comparing two independent groups, only requires the two
+distributions to have the same shape up to a location shift and is robust to skew and outliers,
+so it is the appropriate test for this comparison.
+
+## Running the Test
+
+```{r hyp-summary}
+summary_tab <- all_posts %>%
+  group_by(group) %>%
+  summarise(n = n(),
+            median_likes = median(like_count),
+            mean_likes = round(mean(like_count), 2),
+            IQR_likes = IQR(like_count))
+kable(summary_tab, caption = "Engagement summary by query group")
+```
+
+```{r hyp-boxplot}
+ggplot(all_posts, aes(x = group, y = like_count + 1)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  labs(title = "Likes by query group (log scale, +1 to show zeros)",
+       x = NULL, y = "Likes + 1")
+```
+
+```{r hyp-test}
+wt <- wilcox.test(like_count ~ group, data = all_posts, exact = FALSE, conf.int = TRUE)
+wt
+
+cd <- cliff.delta(like_count ~ group, data = all_posts)
+cd
+```
+
+## Interpretation
+
+The test is significant (W = `r format(wt$statistic, big.mark = ",")`,
+p = `r format.pval(wt$p.value, digits = 3)`), so $H_0$ is rejected: the two groups do not have the
+same distribution of likes. ChatGPT-query posts have a slightly higher median and mean like count
+than general-AI-query posts (Table above).
+
+However, the effect size tells a more useful story than the p-value alone. Cliff's delta is
+`r round(cd$estimate, 3)`, which the `effsize` package itself labels **`r cd$magnitude`**. With
+`r nrow(all_posts)` posts, even a tiny, practically unimportant shift in the distribution becomes
+statistically detectable. So the honest reading of this result is: there **is** a real difference
+in typical engagement between posts naming a specific AI product and posts discussing AI in
+general terms, but the size of that difference is small enough that query type alone is a weak
+predictor of how much engagement an individual post gets. This matters for the overall
+investigation because it means engagement should not be used as a proxy for which *topic* is
+"winning" the conversation other factors (author reach, timing, whether a post is a reply,
+etc.) are doing most of the work, and the thematic content explored in the next two sections is a
+better lens on the conversation than raw like counts.
+
+# 2.3 Text/Content Analysis and Visualisation
+
+## Cleaning the Data
+
+The collection step already restricted the data to English-language posts with non-empty text and
+removed exact duplicate URIs (a post can match more than one search phrase). Two further issues
+need addressing before the text can be analysed:
+
+```{r clean-dupes}
+n_before <- nrow(all_posts)
+all_posts <- all_posts[!duplicated(all_posts$text), ]
+n_after_dedupe <- nrow(all_posts)
+```
+
+- **Repeated text.** `r n_before - n_after_dedupe` posts share exactly the same text as an
+  earlier post (retweet-style reposts, quoted boilerplate, or bot accounts posting identical
+  content). These are removed so that frequent-word counts and clusters reflect distinct
+  contributions rather than the same message counted many times.
+- **Missing engagement values.** The engagement counters (`like_count`, `repost_count`,
+  `reply_count`, `quote_count`) come back as `0`, never `NA`, from the API, so no imputation is
+  needed there; this is confirmed rather than assumed:
+
+```{r clean-na-check}
+colSums(is.na(all_posts[, c("like_count", "repost_count", "reply_count", "quote_count")]))
+```
+
+That leaves `r n_after_dedupe` posts for the text analysis.
+
+## Building the Corpus
+
+```{r corpus}
+posts.text <- all_posts$text
+posts.corpus <- Corpus(VectorSource(posts.text))
+
+# Convert to ASCII to reduce encoding inconsistencies (emoji, curly quotes, etc.).
+posts.corpus <- tm_map(posts.corpus, function(x) iconv(x, to = "ASCII", sub = " "))
+```
+
+## Pre-processing
+
+```{r preprocess}
+# Remove links first so domain fragments do not survive as terms.
+remove_urls <- content_transformer(function(x) {
+  gsub("https?://\\S+|www\\.\\S+", " ", x, perl = TRUE)
+})
+posts.corpus <- tm_map(posts.corpus, remove_urls)
+
+posts.corpus <- tm_map(posts.corpus, removeNumbers)
+posts.corpus <- tm_map(posts.corpus, removePunctuation)
+posts.corpus <- tm_map(posts.corpus, stripWhitespace)
+posts.corpus <- tm_map(posts.corpus, tolower)
+
+# Search terms are removed because they are common by construction, not by content.
+# Punctuation is stripped before stopwords are removed, so contractions such as
+# "don't" become "dont" and survive the standard stopword list; those remnants, plus
+# a handful of generic filler words identified after inspecting an initial run of the
+# top-term list below, are added so the remaining terms carry more topical content.
+custom_words <- c("ai", "artificial", "intelligence", "amp",
+                   "dont", "im", "ive", "youre", "theyre", "cant", "wont", "didnt", "isnt",
+                   "just", "like", "really", "know", "get", "got", "one", "thing",
+                   "say", "said", "also", "much", "many", "even", "still", "going", "gonna")
+posts.corpus <- tm_map(posts.corpus, removeWords, c(stopwords("english"), custom_words))
+
+posts.corpus <- tm_map(posts.corpus, stemDocument)
+```
+
+## Representing the Text
+
+```{r dtm}
+posts.dtm <- DocumentTermMatrix(posts.corpus)
+dim(posts.dtm)
+
+# Some short posts (e.g. a bare "AI" mention, or one that is mostly emoji/mentions)
+# have no terms left after cleaning; these carry no distance/frequency information
+# and are unsuitable records for the analyses below, so they are dropped here.
+doc_lengths <- slam::row_sums(posts.dtm)
+empty_docs <- which(doc_lengths == 0)
+length(empty_docs)
+
+posts.dtm <- posts.dtm[doc_lengths > 0, ]
+all_posts <- all_posts[doc_lengths > 0, ]
+
+# With this many posts the full matrix cannot be densified, so the sparsest terms
+# are dropped first. 0.99 keeps terms appearing in at least one percent of posts.
+posts.dtm <- removeSparseTerms(posts.dtm, 0.99)
+posts.matrix <- as.matrix(posts.dtm)
+dim(posts.matrix)
+```
+
+Bag-of-words counts are an appropriate representation here because the goal in this section is
+summarising *which words* dominate the conversation, not the grammar connecting them; word order
+is deliberately discarded. `r length(empty_docs)` posts were dropped as unsuitable records because
+cleaning left them with no analysable content, and the matrix is trimmed to terms that appear in
+at least 1% of posts, since extremely rare terms cannot support a summary at this scale and would
+make the matrix impossible to work with densely.
+
+## Textual Characteristics
+
+```{r post-length}
+word_counts <- sapply(strsplit(trimws(posts.text), "\\s+"), length)
+summary(word_counts)
+```
+
+```{r viz-length, fig.cap="Distribution of post length in raw words, before cleaning"}
+ggplot(data.frame(words = word_counts), aes(x = words)) +
+  geom_histogram(binwidth = 2, boundary = 0) +
+  labs(title = "Most AI-related Bluesky posts are short",
+       x = "Words per post", y = "Number of posts")
+```
+
+Posts are short: the median is `r median(word_counts)` words and the third quartile is only
+`r quantile(word_counts, 0.75)` words, consistent with Bluesky's character limit and with a
+conversation carried in quick reactions rather than long-form writing. This matters for the
+clustering in the next section, since short documents give k-means less signal to separate on.
+
+## Frequent Words
+
+```{r top-terms}
+w <- colSums(posts.matrix)
+o <- order(w, decreasing = TRUE)[1:20]
+top_terms <- data.frame(term = colnames(posts.matrix)[o], frequency = w[o])
+kable(top_terms, row.names = FALSE, caption = "Top 20 terms by raw frequency")
+```
+
+```{r viz-topterms, fig.cap="Most frequent terms across the cleaned corpus"}
+ggplot(top_terms, aes(x = reorder(term, frequency), y = frequency)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Top 20 most frequent terms", x = NULL, y = "Number of posts containing term")
+```
+
+```{r wordcloud-raw, fig.height=5.5, fig.cap="Word cloud of unweighted term frequencies"}
+freqs <- colSums(posts.matrix)
+wordcloud(names(freqs), freqs,
+          random.order = FALSE, min.freq = 20, max.words = 150,
+          colors = brewer.pal(8, "Dark2"), scale = c(3, 0.5))
+```
+
+## Interpreting the Patterns
+
+Alongside product/tool terms (`chatgpt`, `openai`, `gemini` not shown in the top 20 but present
+further down the table), the top terms split into two broad groups: action/creation words
+(`use`, `generat`, `creat`, `make`, `work`, `write`) and people/impact words (`peopl`, `human`,
+`job`, `compani`). That split already hints at the two themes recovered more formally in the
+clustering below -- AI as a *tool being used* versus AI as a *force acting on people and
+institutions* -- and it is the first concrete evidence, ahead of the clustering, that the
+conversation is not a single homogeneous topic. `generat` sits near the top largely because it is
+the stem of "generative", reflecting the search phrase, and should be read with that in mind
+rather than as a sign that people talk about "generating" things unprompted.
+
+# 2.4 Clustering
+
+## Representation and Distance
+
+Clustering reuses the document-term matrix built above, but re-weights it with **TF-IDF** rather
+than raw counts: raw frequency rewards common, low-information stems (which is exactly what the
+frequency table above is for), whereas TF-IDF down-weights terms that occur in most posts and
+up-weights terms that are distinctive of a smaller set of posts, which is what actually separates
+topics.
+
+```{r tfidf}
+posts.tdm <- t(posts.dtm)
+posts.wtdm <- weightTfIdf(posts.tdm)
+```
+
+Pairwise-distance clustering needs an $N \times N$ distance matrix, so cost grows with the square
+of the number of posts; a random sample keeps the computation tractable while still giving a
+representative cross-section of the twelve-month collection.
+
+```{r cluster-sample}
+set.seed(3020)
+max_cluster_posts <- 1500
+keep <- sample(ncol(posts.wtdm), min(max_cluster_posts, ncol(posts.wtdm)))
+
+posts.wmatrix <- t(as.matrix(posts.wtdm[, keep]))   # documents in rows
+sample_posts <- all_posts[keep, ]
+
+empties <- which(rowSums(abs(posts.wmatrix)) == 0)
+if (length(empties) > 0) {
+  posts.wmatrix <- posts.wmatrix[-empties, ]
+  sample_posts <- sample_posts[-empties, ]
+}
+dim(posts.wmatrix)
+```
+
+Documents are TF-IDF vectors of *proportional* term usage, so two posts about the same topic
+should count as close regardless of how many words either one happens to use; that is exactly
+what **cosine distance** measures (the angle between vectors), whereas plain Euclidean distance on
+raw vectors would also pick up differences in post length as if they were topical differences.
+Cosine distance is obtained here by normalising each document vector to unit length and then
+using Euclidean distance, which is mathematically equivalent to cosine distance on normalised
+vectors; $k$-means itself only operates in Euclidean space, so classical MDS is used to project the
+distance matrix into coordinates it can cluster.
+
+```{r cosine-mds}
+norm.posts.matrix <- posts.wmatrix / sqrt(rowSums(posts.wmatrix^2))
+D <- dist(norm.posts.matrix, method = "euclidean")^2 / 2
+
+N <- nrow(posts.wmatrix)
+mds.posts.matrix <- cmdscale(D, k = min(100, N - 1))
+dim(mds.posts.matrix)
+```
+
+## Choosing the Number of Clusters
+
+A single diagnostic can be misleading, so two are used together: the within-cluster sum of squares
+(elbow method) and the average silhouette width, which additionally checks that points are closer
+to their own cluster than to the nearest neighbouring cluster rather than just checking that
+overall spread has been reduced.
+
+```{r elbow-silhouette}
+n <- 12
+SSW <- rep(0, n)
+sil <- rep(NA, n)
+for (a in 1:n) {
+  K_a <- kmeans(mds.posts.matrix, a, nstart = 10)
+  SSW[a] <- K_a$tot.withinss
+  if (a > 1) sil[a] <- mean(silhouette(K_a$cluster, D)[, 3])
+}
+
+par(mfrow = c(1, 2))
+plot(1:n, SSW, type = "b", xlab = "Number of clusters", ylab = "Within-cluster SS",
+     main = "Elbow")
+plot(2:n, sil[2:n], type = "b", xlab = "Number of clusters", ylab = "Mean silhouette width",
+     main = "Silhouette")
+```
+
+The elbow flattens out from around six clusters onward, and the (uniformly low, as is typical for
+short, noisy social-media text) silhouette width also firms up from six clusters onward rather
+than continuing to climb only because more clusters mechanically shrink each one. Six was
+confirmed, not just read off the plot, by inspecting the top terms and a sample of original posts
+in each of the candidate clusterings around that value (below): fewer clusters merged clearly
+different themes (e.g. product news and personal backlash into one group); more clusters mostly
+split existing themes into near-duplicates rather than revealing new ones.
+
+```{r kmeans}
+number.of.clusters <- 6
+K <- kmeans(mds.posts.matrix, number.of.clusters, nstart = 25)
+table(K$cluster)
+```
+
+```{r viz-clusters, fig.cap="Sampled posts clustered by cosine distance, projected to two MDS dimensions"}
+mds2.posts.matrix <- cmdscale(D, k = 2)
+cluster_df <- data.frame(mds2.posts.matrix, cluster = factor(K$cluster))
+names(cluster_df)[1:2] <- c("dim1", "dim2")
+
+ggplot(cluster_df, aes(x = dim1, y = dim2, colour = cluster)) +
+  geom_point(alpha = 0.6, size = 1.2) +
+  labs(title = "Sampled posts clustered by cosine distance",
+       x = "MDS dimension 1", y = "MDS dimension 2", colour = "Cluster")
+```
+
+The MDS plot shows one large, diffuse cluster with several smaller, tighter clusters pulled out
+around its edge -- consistent with a broad general conversation about AI with a few specific,
+more tightly-worded sub-topics embedded in it.
+
+## Cluster Themes
+
+```{r cluster-terms}
+top_per_cluster <- 12
+theme_terms <- list()
+
+for (cluster.number in 1:number.of.clusters) {
+  ids <- which(K$cluster == cluster.number)
+  cluster_term_weight <- colMeans(posts.wmatrix[ids, , drop = FALSE])
+  o <- order(cluster_term_weight, decreasing = TRUE)[1:top_per_cluster]
+  stems <- colnames(posts.wmatrix)[o]
+  theme_terms[[paste0("cluster", cluster.number)]] <- stems
+  cat("Cluster", cluster.number, "(", length(ids), "posts):", stems, "\n")
+}
+```
+
+```{r cluster-query-mix}
+# Cross-checking clusters against the original search phrase gives an independent
+# read on whether the clusters found in the text line up with something meaningful,
+# rather than accepting the top-term lists at face value.
+table(K$cluster, sample_posts$query)
+```
+
+```{r cluster-examples}
+set.seed(3020)
+for (cluster.number in 1:number.of.clusters) {
+  ids <- which(K$cluster == cluster.number)
+  cat("--- Cluster", cluster.number, "example posts ---\n")
+  print(sample_posts$text[sample(ids, min(2, length(ids)))])
+  cat("\n")
+}
+```
+
+Reading the top terms, the query mix, and the example posts together (rather than the term list
+alone) gives six interpretable themes:
+
+1. **Product/company news** -- dominated by `chatgpt`, `openai`, `gemini`; almost entirely posts
+   collected under the "ChatGPT" phrase. This is the same group singled out in the hypothesis test
+   above, and its tight, news-style language (headlines, company names) is a plausible reason that
+   group's engagement differs slightly from the rest.
+2. **Personal/emotional backlash** -- profanity and first-person language about being replaced or
+   resentful of AI use; a smaller, emotionally distinct pocket of the conversation rather than
+   neutral commentary.
+3. **General AI commentary and news** -- the largest, most diffuse cluster (companies, technology,
+   history, current events); this is the broad background conversation that the other, tighter
+   clusters sit inside.
+4. **Automated/bot content** -- short, templated posts starting with "Feed:" from RSS-style
+   aggregation bots. This is not a topic at all but an artefact of the collection: some accounts
+   auto-post every item from a news feed. It is a useful finding in its own right -- it shows that
+   a small slice of "AI conversation" volume is not conversation at all, and a stricter cleaning
+   pass for further work should consider filtering by author posting pattern, not just language and
+   duplicate text.
+5. **Creative industries and generative AI** -- artists, "content", games; concentrated in the
+   "generative AI" phrase, discussing generative tools' effect on creative work specifically.
+6. **Reflective/opinion posts** -- first-person musing about the future, writing, and long-running
+   personal projects; a smaller cluster of think-piece-style posts rather than news or reaction.
+
+The clustering therefore goes beyond simply separating "AI" posts into arbitrary bins: it recovers
+a recognisable structure of product news, emotional reaction, general commentary, creative-industry
+discussion, personal reflection, and -- usefully -- automated noise, which together describe the
+shape of the AI conversation on Bluesky better than any single summary statistic could.
