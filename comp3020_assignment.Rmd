@@ -100,412 +100,601 @@ AI-related search phrases and twelve months, before any further cleaning.
 
 # 2.2 Hypothesis Testing
 
-## Research Question
+## Significance Level
 
-Two of the search phrases point at very different kinds of talk: **"ChatGPT"** names a specific,
-branded product, while **"AI"**, **"artificial intelligence"** and **"generative AI"** are used
-for more general discussion of the technology. A natural question for the overall investigation
-into what the AI conversation on Bluesky looks like is whether these two kinds of post are
-received differently by the audience.
-
-> **Research question:** Do posts that name a specific AI product (ChatGPT) receive a different
-> level of engagement, measured by the number of likes, than posts that discuss AI in more
-> general terms?
-
-## Hypotheses
-
-- $H_0$: The distribution of `like_count` is the same for ChatGPT-query posts and general-AI-query
-  posts (no location shift between the two groups).
-- $H_1$: The distribution of `like_count` differs between ChatGPT-query posts and general-AI-query
-  posts (two-sided).
-
-## Choosing the Test
-
-```{r hyp-groups}
-all_posts$group = ifelse(all_posts$query == "ChatGPT", "ChatGPT", "General AI terms")
-table(all_posts$group)
+```{r alpha}
+alpha = 0.05
 ```
 
-```{r hyp-shape}
-ggplot(all_posts, aes(x = like_count)) +
-  geom_histogram(bins = 40) +
-  scale_x_continuous(trans = "log1p", breaks = c(0, 1, 5, 20, 100, 500, 2000)) +
-  facet_wrap(~ group, ncol = 1, scales = "free_y") +
-  labs(title = "Distribution of likes is heavily right-skewed with a large mass at zero",
-       x = "Likes (log1p scale)", y = "Number of posts")
+## Hypothesis 1: ChatGPT and Generative AI
+
+### Stating Keywords and Hypothesis
+
+```{r h1-setup}
+keyword_A = "chatgpt"
+keyword_B = "generative"
+
+# H0: mean likes of posts with keyword A == mean likes of posts with keyword B
+# H1: the mean likes differ
 ```
 
-`like_count` is a non-negative count with a median of `r median(all_posts$like_count)`, a mean of
-`r round(mean(all_posts$like_count), 1)`, and a maximum of `r max(all_posts$like_count)`. Most
-posts get very few or no likes, while a small number go viral, so the distribution is far from
-normal in both groups (the histogram above is on a log scale and still shows a long tail). An
-independent-samples $t$-test assumes approximately normal, equal-variance samples, which does not
-hold here. The **Wilcoxon rank-sum test (Mann-Whitney U test)**, covered in COMP3020 as the
-non-parametric alternative for comparing two independent groups, only requires the two
-distributions to have the same shape up to a location shift and is robust to skew and outliers,
-so it is the appropriate test for this comparison.
+### Filtering Data
 
-## Running the Test
+```{r h1-filter}
+data_keyword_A = all_posts %>% filter(grepl(keyword_A, text, ignore.case = TRUE))
+data_keyword_B = all_posts %>% filter(grepl(keyword_B, text, ignore.case = TRUE))
 
-```{r hyp-summary}
-summary_tab = all_posts %>%
-  group_by(group) %>%
-  summarise(n = n(),
-            median_likes = median(like_count),
-            mean_likes = round(mean(like_count), 2),
-            IQR_likes = IQR(like_count))
-kable(summary_tab, caption = "Engagement summary by query group")
+nrow(data_keyword_A)
+nrow(data_keyword_B)
+
+cat("The number of likes with keyword A:", sum(data_keyword_A$like_count), "\n",
+    "The number of likes with keyword B:", sum(data_keyword_B$like_count))
 ```
 
-```{r hyp-boxplot}
-ggplot(all_posts, aes(x = group, y = like_count + 1)) +
-  geom_boxplot() +
-  scale_y_log10() +
-  labs(title = "Likes by query group (log scale, +1 to show zeros)",
-       x = NULL, y = "Likes + 1")
+### Diagnostic Plots
+
+```{r h1-diagnostics}
+par(mfrow = c(1, 2))
+qqnorm(data_keyword_A$like_count, main = paste("Q-Q Plot of Likes for", keyword_A))
+qqline(data_keyword_A$like_count, col = "red")
+qqnorm(data_keyword_B$like_count, main = paste("Q-Q Plot of Likes for", keyword_B))
+qqline(data_keyword_B$like_count, col = "red")
+par(mfrow = c(1, 1))
+
+boxplot(data_keyword_A$like_count, data_keyword_B$like_count,
+        names = c(keyword_A, keyword_B),
+        main = "Boxplot of Likes", ylab = "Number of Likes")
 ```
 
-```{r hyp-test}
-wt = wilcox.test(like_count ~ group, data = all_posts, exact = FALSE, conf.int = TRUE)
-wt
+### Two-Sample t-test
 
-cd = cliff.delta(like_count ~ group, data = all_posts)
-cd
+```{r h1-test}
+t_test_h1 = t.test(data_keyword_A$like_count, data_keyword_B$like_count,
+                   alternative = "two.sided", var.equal = FALSE)
+t_test_h1
+
+t_test_h1$p.value < alpha
 ```
 
-## Interpretation
+## Hypothesis 2: Outrage and Enthusiasm
 
-The test is significant (W = `r format(wt$statistic, big.mark = ",")`,
-p = `r format.pval(wt$p.value, digits = 3)`), so $H_0$ is rejected: the two groups do not have the
-same distribution of likes. ChatGPT-query posts have a slightly higher median and mean like count
-than general-AI-query posts (Table above).
+### Stating Keywords and Hypothesis
 
-However, the effect size tells a more useful story than the p-value alone. Cliff's delta is
-`r round(cd$estimate, 3)`, which the `effsize` package itself labels **`r cd$magnitude`**. With
-`r nrow(all_posts)` posts, even a tiny, practically unimportant shift in the distribution becomes
-statistically detectable. So the honest reading of this result is: there **is** a real difference
-in typical engagement between posts naming a specific AI product and posts discussing AI in
-general terms, but the size of that difference is small enough that query type alone is a weak
-predictor of how much engagement an individual post gets. This matters for the overall
-investigation because it means engagement should not be used as a proxy for which *topic* is
-"winning" the conversation other factors (author reach, timing, whether a post is a reply,
-etc.) are doing most of the work, and the thematic content explored in the next two sections is a
-better lens on the conversation than raw like counts.
+```{r h2-setup}
+backlash_pattern = "\\b(slop|stolen|theft|scam)"
+enthusiasm_pattern = "\\b(amazing|exciting|helpful|useful)"
+
+# H0: mean likes of backlash posts == mean likes of enthusiasm posts
+# H1: the mean likes differ
+```
+
+### Filtering Data
+
+```{r h2-filter}
+data_backlash = all_posts %>% filter(grepl(backlash_pattern, text, ignore.case = TRUE))
+data_enthusiasm = all_posts %>% filter(grepl(enthusiasm_pattern, text, ignore.case = TRUE))
+
+nrow(data_backlash)
+nrow(data_enthusiasm)
+
+cat("The number of likes on backlash posts:", sum(data_backlash$like_count), "\n",
+    "The number of likes on enthusiasm posts:", sum(data_enthusiasm$like_count))
+```
+
+### Diagnostic Plots
+
+```{r h2-diagnostics}
+par(mfrow = c(1, 2))
+qqnorm(data_backlash$like_count, main = "Q-Q Plot of Likes for Backlash")
+qqline(data_backlash$like_count, col = "red")
+qqnorm(data_enthusiasm$like_count, main = "Q-Q Plot of Likes for Enthusiasm")
+qqline(data_enthusiasm$like_count, col = "red")
+par(mfrow = c(1, 1))
+
+boxplot(data_backlash$like_count, data_enthusiasm$like_count,
+        names = c("Backlash", "Enthusiasm"),
+        main = "Boxplot of Likes", ylab = "Number of Likes")
+```
+
+### Two-Sample t-test
+
+```{r h2-test}
+t_test_h2 = t.test(data_backlash$like_count, data_enthusiasm$like_count,
+                   alternative = "two.sided", var.equal = FALSE)
+t_test_h2
+
+t_test_h2$p.value < alpha
+```
+
+## Hypothesis 3: Jobs and Art
+
+### Stating Keywords and Hypothesis
+
+```{r h3-setup}
+# trailing boundary keeps "art" from matching "artificial"
+job_pattern = "\\b(job|jobs|layoffs?|laid off|workers?|unemploy\\w*)\\b"
+art_pattern = "\\b(art|arts|artists?|artwork|creatives?)\\b"
+
+# H0: mean reposts of job posts == mean reposts of art posts
+# H1: the mean reposts differ
+```
+
+### Filtering Data
+
+```{r h3-filter}
+data_job = all_posts %>% filter(grepl(job_pattern, text, ignore.case = TRUE))
+data_art = all_posts %>% filter(grepl(art_pattern, text, ignore.case = TRUE))
+
+nrow(data_job)
+nrow(data_art)
+
+cat("The number of reposts of job posts:", sum(data_job$repost_count), "\n",
+    "The number of reposts of art posts:", sum(data_art$repost_count))
+```
+
+### Diagnostic Plots
+
+```{r h3-diagnostics}
+par(mfrow = c(1, 2))
+qqnorm(data_job$repost_count, main = "Q-Q Plot of Reposts for Jobs")
+qqline(data_job$repost_count, col = "red")
+qqnorm(data_art$repost_count, main = "Q-Q Plot of Reposts for Art")
+qqline(data_art$repost_count, col = "red")
+par(mfrow = c(1, 1))
+
+boxplot(data_job$repost_count, data_art$repost_count,
+        names = c("Jobs", "Art"),
+        main = "Boxplot of Reposts", ylab = "Number of Reposts")
+```
+
+### Two-Sample t-test
+
+```{r h3-test}
+t_test_h3 = t.test(data_job$repost_count, data_art$repost_count,
+                   alternative = "two.sided", var.equal = FALSE)
+t_test_h3
+
+t_test_h3$p.value < alpha
+```
+
+## Hypothesis 4: Early and Late Period
+
+### Stating Periods and Hypothesis
+
+```{r h4-setup}
+period_months = sort(unique(all_posts$window))
+early_months = head(period_months, floor(length(period_months) / 2))
+
+period_months
+early_months
+
+# H0: mean likes of early-period posts == mean likes of late-period posts
+# H1: the mean likes differ
+# recent posts have had less time to collect likes
+```
+
+### Filtering Data
+
+```{r h4-filter}
+data_early = all_posts %>% filter(window %in% early_months)
+data_late = all_posts %>% filter(!(window %in% early_months))
+
+nrow(data_early)
+nrow(data_late)
+
+cat("The number of likes in the early period:", sum(data_early$like_count), "\n",
+    "The number of likes in the late period:", sum(data_late$like_count))
+```
+
+### Diagnostic Plots
+
+```{r h4-diagnostics}
+par(mfrow = c(1, 2))
+qqnorm(data_early$like_count, main = "Q-Q Plot of Likes, Early Period")
+qqline(data_early$like_count, col = "red")
+qqnorm(data_late$like_count, main = "Q-Q Plot of Likes, Late Period")
+qqline(data_late$like_count, col = "red")
+par(mfrow = c(1, 1))
+
+boxplot(data_early$like_count, data_late$like_count,
+        names = c("Early", "Late"),
+        main = "Boxplot of Likes", ylab = "Number of Likes")
+```
+
+### Two-Sample t-test
+
+```{r h4-test}
+t_test_h4 = t.test(data_early$like_count, data_late$like_count,
+                   alternative = "two.sided", var.equal = FALSE)
+t_test_h4
+
+t_test_h4$p.value < alpha
+```
+
+## Hypothesis 5: Long and Short Posts
+
+### Stating Length Groups and Hypothesis
+
+```{r h5-setup}
+posts_length = all_posts %>%
+  mutate(word_count = lengths(strsplit(trimws(text), "\\s+")))
+
+median_words = median(posts_length$word_count)
+median_words
+
+# H0: mean likes of posts above the median length == mean likes of posts at or below it
+# H1: the mean likes differ
+```
+
+### Filtering Data
+
+```{r h5-filter}
+data_long = posts_length %>% filter(word_count > median_words)
+data_short = posts_length %>% filter(word_count <= median_words)
+
+nrow(data_long)
+nrow(data_short)
+
+cat("The number of likes on long posts:", sum(data_long$like_count), "\n",
+    "The number of likes on short posts:", sum(data_short$like_count))
+```
+
+### Diagnostic Plots
+
+```{r h5-diagnostics}
+par(mfrow = c(1, 2))
+qqnorm(data_long$like_count, main = "Q-Q Plot of Likes, Long Posts")
+qqline(data_long$like_count, col = "red")
+qqnorm(data_short$like_count, main = "Q-Q Plot of Likes, Short Posts")
+qqline(data_short$like_count, col = "red")
+par(mfrow = c(1, 1))
+
+boxplot(data_long$like_count, data_short$like_count,
+        names = c("Long", "Short"),
+        main = "Boxplot of Likes", ylab = "Number of Likes")
+```
+
+### Two-Sample t-test
+
+```{r h5-test}
+t_test_h5 = t.test(data_long$like_count, data_short$like_count,
+                   alternative = "two.sided", var.equal = FALSE)
+t_test_h5
+
+t_test_h5$p.value < alpha
+```
+
+## Summary of Tests
+
+```{r hypothesis-summary}
+tests = list(t_test_h1, t_test_h2, t_test_h3, t_test_h4, t_test_h5)
+
+hypothesis_summary = data.frame(
+  hypothesis = c("chatgpt vs generative", "backlash vs enthusiasm", "jobs vs art",
+                 "early vs late", "long vs short"),
+  measure = c("likes", "likes", "reposts", "likes", "likes"),
+  n_A = c(nrow(data_keyword_A), nrow(data_backlash), nrow(data_job),
+          nrow(data_early), nrow(data_long)),
+  n_B = c(nrow(data_keyword_B), nrow(data_enthusiasm), nrow(data_art),
+          nrow(data_late), nrow(data_short)),
+  mean_A = sapply(tests, function(t) t$estimate[1]),
+  mean_B = sapply(tests, function(t) t$estimate[2]),
+  t_statistic = sapply(tests, function(t) t$statistic),
+  p_value = sapply(tests, function(t) t$p.value))
+
+hypothesis_summary$reject_H0 = hypothesis_summary$p_value < alpha
+hypothesis_summary
+```
 
 # 2.3 Text/Content Analysis and Visualisation
 
-## Cleaning the Data
+## Removing Repeated Text
 
-The collection step already restricted the data to English-language posts with non-empty text and
-removed exact duplicate URIs (a post can match more than one search phrase). Two further issues
-need addressing before the text can be analysed:
+```{r dedupe}
+posts_clean = all_posts[!duplicated(all_posts$text), ]
 
-```{r clean-dupes}
-n_before = nrow(all_posts)
-all_posts = all_posts[!duplicated(all_posts$text), ]
-n_after_dedupe = nrow(all_posts)
+# posting month: created_at where present, otherwise the search window
+posts_clean$month = if ("created_at" %in% names(posts_clean)) {
+  substr(posts_clean$created_at, 1, 7)
+} else {
+  posts_clean$window
+}
+
+nrow(all_posts) - nrow(posts_clean)
+nrow(posts_clean)
 ```
 
-- **Repeated text.** `r n_before - n_after_dedupe` posts share exactly the same text as an
-  earlier post (retweet-style reposts, quoted boilerplate, or bot accounts posting identical
-  content). These are removed so that frequent-word counts and clusters reflect distinct
-  contributions rather than the same message counted many times.
-- **Missing engagement values.** The engagement counters (`like_count`, `repost_count`,
-  `reply_count`, `quote_count`) come back as `0`, never `NA`, from the API, so no imputation is
-  needed there; this is confirmed rather than assumed:
-
-```{r clean-na-check}
-colSums(is.na(all_posts[, c("like_count", "repost_count", "reply_count", "quote_count")]))
-```
-
-That leaves `r n_after_dedupe` posts for the text analysis.
-
-## Building the Corpus
+## Creating the Corpus
 
 ```{r corpus}
-posts.text = all_posts$text
-posts.corpus = Corpus(VectorSource(posts.text))
+posts.text = posts_clean$text
+index = posts_clean$query
+post_month = posts_clean$month
 
-# Convert to ASCII to reduce encoding inconsistencies (emoji, curly quotes, etc.).
+posts.corpus = Corpus(VectorSource(posts.text))
 posts.corpus = tm_map(posts.corpus, function(x) iconv(x, to = "ASCII", sub = " "))
 ```
 
-## Pre-processing
+## Pre-processing the Corpus
 
 ```{r preprocess}
-# Remove links first so domain fragments do not survive as terms.
 remove_urls = content_transformer(function(x) {
   gsub("https?://\\S+|www\\.\\S+", " ", x, perl = TRUE)
 })
 posts.corpus = tm_map(posts.corpus, remove_urls)
 
+custom_words = c("ai", "artificial", "intelligence", "amp",
+                 "dont", "im", "ive", "youre", "theyre", "cant", "wont", "didnt", "isnt",
+                 "just", "like", "really", "know", "get", "got", "one", "thing",
+                 "say", "said", "also", "much", "many", "even", "still", "going", "gonna")
+
 posts.corpus = tm_map(posts.corpus, removeNumbers)
 posts.corpus = tm_map(posts.corpus, removePunctuation)
 posts.corpus = tm_map(posts.corpus, stripWhitespace)
 posts.corpus = tm_map(posts.corpus, tolower)
-
-# Search terms are removed because they are common by construction, not by content.
-# Punctuation is stripped before stopwords are removed, so contractions such as
-# "don't" become "dont" and survive the standard stopword list; those remnants, plus
-# a handful of generic filler words identified after inspecting an initial run of the
-# top-term list below, are added so the remaining terms carry more topical content.
-custom_words = c("ai", "artificial", "intelligence", "amp",
-                   "dont", "im", "ive", "youre", "theyre", "cant", "wont", "didnt", "isnt",
-                   "just", "like", "really", "know", "get", "got", "one", "thing",
-                   "say", "said", "also", "much", "many", "even", "still", "going", "gonna")
 posts.corpus = tm_map(posts.corpus, removeWords, c(stopwords("english"), custom_words))
-
 posts.corpus = tm_map(posts.corpus, stemDocument)
 ```
 
-## Representing the Text
+## Creating the Document-Term Matrix
 
 ```{r dtm}
 posts.dtm = DocumentTermMatrix(posts.corpus)
 dim(posts.dtm)
 
-# Some short posts (e.g. a bare "AI" mention, or one that is mostly emoji/mentions)
-# have no terms left after cleaning; these carry no distance/frequency information
-# and are unsuitable records for the analyses below, so they are dropped here.
-doc_lengths = slam::row_sums(posts.dtm)
-empty_docs = which(doc_lengths == 0)
-length(empty_docs)
-
-posts.dtm = posts.dtm[doc_lengths > 0, ]
-all_posts = all_posts[doc_lengths > 0, ]
-
-# With this many posts the full matrix cannot be densified, so the sparsest terms
-# are dropped first. 0.99 keeps terms appearing in at least one percent of posts.
+# terms in fewer than 1% of posts removed so the matrix fits in memory
 posts.dtm = removeSparseTerms(posts.dtm, 0.99)
 posts.matrix = as.matrix(posts.dtm)
+
+# documents left empty by cleaning removed
+empties = which(rowSums(posts.matrix) == 0)
+if (length(empties) > 0) {
+  posts.matrix = posts.matrix[-empties, ]
+  posts.dtm = posts.dtm[-empties, ]
+  index = index[-empties]
+  post_month = post_month[-empties]
+}
+
 dim(posts.matrix)
 ```
 
-Bag-of-words counts are an appropriate representation here because the goal in this section is
-summarising *which words* dominate the conversation, not the grammar connecting them; word order
-is deliberately discarded. `r length(empty_docs)` posts were dropped as unsuitable records because
-cleaning left them with no analysable content, and the matrix is trimmed to terms that appear in
-at least 1% of posts, since extremely rare terms cannot support a summary at this scale and would
-make the matrix impossible to work with densely.
+## Finding the Top 20 Terms
 
-## Textual Characteristics
-
-```{r post-length}
-word_counts = sapply(strsplit(trimws(posts.text), "\\s+"), length)
-summary(word_counts)
-```
-
-```{r viz-length, fig.cap="Distribution of post length in raw words, before cleaning"}
-ggplot(data.frame(words = word_counts), aes(x = words)) +
-  geom_histogram(binwidth = 2, boundary = 0) +
-  labs(title = "Most AI-related Bluesky posts are short",
-       x = "Words per post", y = "Number of posts")
-```
-
-Posts are short: the median is `r median(word_counts)` words and the third quartile is only
-`r quantile(word_counts, 0.75)` words, consistent with Bluesky's character limit and with a
-conversation carried in quick reactions rather than long-form writing. This matters for the
-clustering in the next section, since short documents give k-means less signal to separate on.
-
-## Frequent Words
-
-```{r top-terms}
+```{r top-20}
 w = colSums(posts.matrix)
 o = order(w, decreasing = TRUE)[1:20]
-top_terms = data.frame(term = colnames(posts.matrix)[o], frequency = w[o])
-kable(top_terms, row.names = FALSE, caption = "Top 20 terms by raw frequency")
+
+top_20_words = colnames(posts.matrix)[o]
+top_20_words
 ```
 
-```{r viz-topterms, fig.cap="Most frequent terms across the cleaned corpus"}
-ggplot(top_terms, aes(x = reorder(term, frequency), y = frequency)) +
-  geom_col() +
-  coord_flip() +
-  labs(title = "Top 20 most frequent terms", x = NULL, y = "Number of posts containing term")
+## TF-IDF Weighting
+
+```{r builtin-tfidf}
+posts.tdm = t(posts.dtm)
+posts.wtdm = weightTfIdf(posts.tdm)
+posts.weighted.tdm = as.matrix(posts.wtdm)
+dim(posts.weighted.tdm)
+
+sums = rowSums(posts.weighted.tdm)
+o = order(sums, decreasing = TRUE)[1:20]
+
+TFIDF_top20_words = names(sums)[o]
+TFIDF_top20_words
 ```
 
-```{r wordcloud-raw, fig.height=5.5, fig.cap="Word cloud of unweighted term frequencies"}
-freqs = colSums(posts.matrix)
+## Comparing Frequency and TF-IDF Results
+
+```{r compare-rankings}
+data.frame(top_20_words, TFIDF_top20_words)
+```
+
+## Unweighted Word Cloud
+
+```{r wordcloud-unweighted, fig.height=5.5}
+freqs = rowSums(as.matrix(posts.tdm))
+freqs = freqs[!is.na(freqs)]
+
 wordcloud(names(freqs), freqs,
-          random.order = FALSE, min.freq = 20, max.words = 150,
-          colors = brewer.pal(8, "Dark2"), scale = c(3, 0.5))
+          random.order = FALSE,
+          min.freq = 6,
+          max.words = 200,
+          colors = brewer.pal(8, "Dark2"),
+          scale = c(2, .5))
+title("Unweighted M (TDM)")
 ```
 
-## Interpreting the Patterns
+## TF-IDF Weighted Word Cloud
 
-Alongside product/tool terms (`chatgpt`, `openai`, `gemini` not shown in the top 20 but present
-further down the table), the top terms split into two broad groups: action/creation words
-(`use`, `generat`, `creat`, `make`, `work`, `write`) and people/impact words (`peopl`, `human`,
-`job`, `compani`). That split already hints at the two themes recovered more formally in the
-clustering below -- AI as a *tool being used* versus AI as a *force acting on people and
-institutions* -- and it is the first concrete evidence, ahead of the clustering, that the
-conversation is not a single homogeneous topic. `generat` sits near the top largely because it is
-the stem of "generative", reflecting the search phrase, and should be read with that in mind
-rather than as a sign that people talk about "generating" things unprompted.
+```{r wordcloud-weighted, fig.height=5.5}
+freqsw = rowSums(posts.weighted.tdm)
+
+wordcloud(names(freqsw), freqsw,
+          random.order = FALSE,
+          min.freq = 6,
+          max.words = 200,
+          colors = brewer.pal(8, "Dark2"),
+          scale = c(1, .5))
+title("TF-IDF Weighted T (TDM)")
+```
+
+## Word Clouds by Search Phrase
+
+```{r wordcloud-by-phrase, fig.height=5.5}
+data_list = split(posts_clean$text, posts_clean$query)
+
+j = 1
+for (i in data_list) {
+  corpus = Corpus(VectorSource(i))
+  corpus = tm_map(corpus, content_transformer(function(x) iconv(x, to = "ASCII", sub = " ")))
+  corpus = tm_map(corpus, remove_urls)
+  corpus = tm_map(corpus, removeNumbers)
+  corpus = tm_map(corpus, removePunctuation)
+  corpus = tm_map(corpus, stripWhitespace)
+  corpus = tm_map(corpus, tolower)
+  corpus = tm_map(corpus, removeWords, c(stopwords("en"), custom_words))
+  corpus = tm_map(corpus, stemDocument)
+
+  tdm = TermDocumentMatrix(corpus)
+  # sparse terms removed so each phrase's matrix fits in memory
+  tdm = removeSparseTerms(tdm, 0.99)
+  tdm_matrix = as.matrix(tdm)
+
+  freqs = rowSums(tdm_matrix)
+  freqs = freqs[!is.na(freqs)]
+
+  wordcloud(names(freqs), freqs,
+            random.order = FALSE,
+            min.freq = 3,
+            max.words = 100,
+            colors = brewer.pal(8, "Dark2"))
+  mtext(names(data_list)[j], side = 3, line = 1, cex = 1.5)
+
+  j = j + 1
+}
+```
 
 # 2.4 Clustering
 
-## Representation and Distance
+## Building the Weighted Document-Term Matrix
 
-Clustering reuses the document-term matrix built above, but re-weights it with **TF-IDF** rather
-than raw counts: raw frequency rewards common, low-information stems (which is exactly what the
-frequency table above is for), whereas TF-IDF down-weights terms that occur in most posts and
-up-weights terms that are distinctive of a smaller set of posts, which is what actually separates
-topics.
-
-```{r tfidf}
-posts.tdm = t(posts.dtm)
-posts.wtdm = weightTfIdf(posts.tdm)
-```
-
-Pairwise-distance clustering needs an $N \times N$ distance matrix, so cost grows with the square
-of the number of posts; a random sample keeps the computation tractable while still giving a
-representative cross-section of the twelve-month collection.
-
-```{r cluster-sample}
+```{r cluster-matrix}
 set.seed(3020)
-max_cluster_posts = 1500
-keep = sample(ncol(posts.wtdm), min(max_cluster_posts, ncol(posts.wtdm)))
 
-posts.wmatrix = t(as.matrix(posts.wtdm[, keep]))   # documents in rows
-sample_posts = all_posts[keep, ]
+# a sample keeps the N by N distance matrix tractable
+max_cluster_posts = 3000
+keep = sample(ncol(posts.weighted.tdm), min(max_cluster_posts, ncol(posts.weighted.tdm)))
 
-empties = which(rowSums(abs(posts.wmatrix)) == 0)
+posts.cmatrix = t(posts.weighted.tdm[, keep])
+index.clust = index[keep]
+month.clust = post_month[keep]
+
+empties = which(rowSums(abs(posts.cmatrix)) == 0)
 if (length(empties) > 0) {
-  posts.wmatrix = posts.wmatrix[-empties, ]
-  sample_posts = sample_posts[-empties, ]
+  posts.cmatrix = posts.cmatrix[-empties, ]
+  index.clust = index.clust[-empties]
+  month.clust = month.clust[-empties]
 }
-dim(posts.wmatrix)
+
+dim(posts.cmatrix)
 ```
 
-Documents are TF-IDF vectors of *proportional* term usage, so two posts about the same topic
-should count as close regardless of how many words either one happens to use; that is exactly
-what **cosine distance** measures (the angle between vectors), whereas plain Euclidean distance on
-raw vectors would also pick up differences in post length as if they were topical differences.
-Cosine distance is obtained here by normalising each document vector to unit length and then
-using Euclidean distance, which is mathematically equivalent to cosine distance on normalised
-vectors; $k$-means itself only operates in Euclidean space, so classical MDS is used to project the
-distance matrix into coordinates it can cluster.
+## K-Means Clustering
 
-```{r cosine-mds}
-norm.posts.matrix = posts.wmatrix / sqrt(rowSums(posts.wmatrix^2))
-D = dist(norm.posts.matrix, method = "euclidean")^2 / 2
+```{r kmeans-one}
+number.of.clusters = 1
+K = kmeans(posts.cmatrix, number.of.clusters)
 
-N = nrow(posts.wmatrix)
-mds.posts.matrix = cmdscale(D, k = min(100, N - 1))
+K$tot.withinss
+K$totss
+```
+
+## Applying the Elbow Method
+
+```{r elbow-euclidean}
+n = 15
+SSW = rep(0, n)
+for (a in 1:n) {
+  K = kmeans(posts.cmatrix, a, nstart = 10)
+  SSW[a] = K$tot.withinss
+}
+
+plot(1:15, SSW, type = "b", xaxt = "n", xlab = "k")
+axis(1, at = 1:15)
+```
+
+## Calculating Cosine Distance
+
+```{r cosine-distance}
+norm.posts.matrix = diag(
+  1/sqrt(rowSums(posts.cmatrix^2))
+) %*% posts.cmatrix
+
+D = dist(norm.posts.matrix, method = "euclidean")^2/2
+```
+
+## Projecting into Euclidean Space
+
+```{r mds}
+N = dim(posts.cmatrix)[1]
+N
+
+mds.posts.matrix = cmdscale(D, k = min(N - 1, ncol(posts.cmatrix)))
+
+dim(as.matrix(D))
 dim(mds.posts.matrix)
 ```
 
-## Choosing the Number of Clusters
-
-A single diagnostic can be misleading, so two are used together: the within-cluster sum of squares
-(elbow method) and the average silhouette width, which additionally checks that points are closer
-to their own cluster than to the nearest neighbouring cluster rather than just checking that
-overall spread has been reduced.
+## Selecting the Number of Clusters
 
 ```{r elbow-silhouette}
-n = 12
+n = 15
 SSW = rep(0, n)
-sil = rep(NA, n)
+sil_score = rep(NA, n)
+
 for (a in 1:n) {
-  K_a = kmeans(mds.posts.matrix, a, nstart = 10)
-  SSW[a] = K_a$tot.withinss
-  if (a > 1) sil[a] = mean(silhouette(K_a$cluster, D)[, 3])
+  K = kmeans(mds.posts.matrix, a, nstart = 20)
+  SSW[a] = K$tot.withinss
+  if (a > 1) sil_score[a] = mean(silhouette(K$cluster, D)[, 3])
 }
 
 par(mfrow = c(1, 2))
-plot(1:n, SSW, type = "b", xlab = "Number of clusters", ylab = "Within-cluster SS",
-     main = "Elbow")
-plot(2:n, sil[2:n], type = "b", xlab = "Number of clusters", ylab = "Mean silhouette width",
-     main = "Silhouette")
+plot(1:15, SSW, type = "b", xaxt = "n", xlab = "k")
+axis(1, at = 1:15)
+plot(1:15, sil_score, type = "b", xaxt = "n", xlab = "k")
+axis(1, at = 1:15)
+par(mfrow = c(1, 1))
+
+data.frame(k = 1:n, WSS = SSW, Silhouette_Score = sil_score)
 ```
 
-The elbow flattens out from around six clusters onward, and the (uniformly low, as is typical for
-short, noisy social-media text) silhouette width also firms up from six clusters onward rather
-than continuing to climb only because more clusters mechanically shrink each one. Six was
-confirmed, not just read off the plot, by inspecting the top terms and a sample of original posts
-in each of the candidate clusterings around that value (below): fewer clusters merged clearly
-different themes (e.g. product news and personal backlash into one group); more clusters mostly
-split existing themes into near-duplicates rather than revealing new ones.
+## K-Means with Cosine Distance
 
-```{r kmeans}
-number.of.clusters = 6
-K = kmeans(mds.posts.matrix, number.of.clusters, nstart = 25)
+```{r kmeans-cosine}
+# set from the elbow and silhouette plots above
+number.of.clusters = 5
+
+K = kmeans(mds.posts.matrix, number.of.clusters, nstart = 20)
+summary(K)
 table(K$cluster)
+
+cluster_sizes = table(K$cluster)
+min(cluster_sizes) / max(cluster_sizes)
 ```
 
-```{r viz-clusters, fig.cap="Sampled posts clustered by cosine distance, projected to two MDS dimensions"}
+## Visualising the Clusters
+
+```{r plot-clusters}
 mds2.posts.matrix = cmdscale(D, k = 2)
-cluster_df = data.frame(mds2.posts.matrix, cluster = factor(K$cluster))
-names(cluster_df)[1:2] = c("dim1", "dim2")
-
-ggplot(cluster_df, aes(x = dim1, y = dim2, colour = cluster)) +
-  geom_point(alpha = 0.6, size = 1.2) +
-  labs(title = "Sampled posts clustered by cosine distance",
-       x = "MDS dimension 1", y = "MDS dimension 2", colour = "Cluster")
+plot(mds2.posts.matrix, col = K$cluster)
 ```
 
-The MDS plot shows one large, diffuse cluster with several smaller, tighter clusters pulled out
-around its edge -- consistent with a broad general conversation about AI with a few specific,
-more tightly-worded sub-topics embedded in it.
+## Examining Cluster Contents
 
-## Cluster Themes
-
-```{r cluster-terms}
-top_per_cluster = 12
-theme_terms = list()
-
+```{r cluster-contents}
 for (cluster.number in 1:number.of.clusters) {
-  ids = which(K$cluster == cluster.number)
-  cluster_term_weight = colMeans(posts.wmatrix[ids, , drop = FALSE])
-  o = order(cluster_term_weight, decreasing = TRUE)[1:top_per_cluster]
-  stems = colnames(posts.wmatrix)[o]
-  theme_terms[[paste0("cluster", cluster.number)]] = stems
-  cat("Cluster", cluster.number, "(", length(ids), "posts):", stems, "\n")
+  clusterpostsId = which(K$cluster == cluster.number)
+  clusterposts = posts.cmatrix[clusterpostsId, , drop = FALSE]
+  clusterTermWeight = colMeans(clusterposts)
+  o = order(clusterTermWeight, decreasing = TRUE)[1:10]
+  cat("Cluster", cluster.number, "(", length(clusterpostsId), "posts):",
+      colnames(posts.cmatrix)[o], "\n")
 }
 ```
 
-```{r cluster-query-mix}
-# Cross-checking clusters against the original search phrase gives an independent
-# read on whether the clusters found in the text line up with something meaningful,
-# rather than accepting the top-term lists at face value.
-table(K$cluster, sample_posts$query)
+## Comparing Clusters with Search Phrases
+
+```{r cluster-vs-phrase}
+table(K$cluster, index.clust)
 ```
 
-```{r cluster-examples}
-set.seed(3020)
-for (cluster.number in 1:number.of.clusters) {
-  ids = which(K$cluster == cluster.number)
-  cat("--- Cluster", cluster.number, "example posts ---\n")
-  print(sample_posts$text[sample(ids, min(2, length(ids)))])
-  cat("\n")
-}
+## Hierarchical Clustering
+
+```{r hierarchical, fig.height=5}
+H = hclust(D, method = "complete")
+plot(H, labels = FALSE)
+
+groups = cutree(H, k = number.of.clusters)
+table(groups)
+table(groups, index.clust)
 ```
-
-Reading the top terms, the query mix, and the example posts together (rather than the term list
-alone) gives six interpretable themes:
-
-1. **Product/company news** -- dominated by `chatgpt`, `openai`, `gemini`; almost entirely posts
-   collected under the "ChatGPT" phrase. This is the same group singled out in the hypothesis test
-   above, and its tight, news-style language (headlines, company names) is a plausible reason that
-   group's engagement differs slightly from the rest.
-2. **Personal/emotional backlash** -- profanity and first-person language about being replaced or
-   resentful of AI use; a smaller, emotionally distinct pocket of the conversation rather than
-   neutral commentary.
-3. **General AI commentary and news** -- the largest, most diffuse cluster (companies, technology,
-   history, current events); this is the broad background conversation that the other, tighter
-   clusters sit inside.
-4. **Automated/bot content** -- short, templated posts starting with "Feed:" from RSS-style
-   aggregation bots. This is not a topic at all but an artefact of the collection: some accounts
-   auto-post every item from a news feed. It is a useful finding in its own right -- it shows that
-   a small slice of "AI conversation" volume is not conversation at all, and a stricter cleaning
-   pass for further work should consider filtering by author posting pattern, not just language and
-   duplicate text.
-5. **Creative industries and generative AI** -- artists, "content", games; concentrated in the
-   "generative AI" phrase, discussing generative tools' effect on creative work specifically.
-6. **Reflective/opinion posts** -- first-person musing about the future, writing, and long-running
-   personal projects; a smaller cluster of think-piece-style posts rather than news or reaction.
-
-The clustering therefore goes beyond simply separating "AI" posts into arbitrary bins: it recovers
-a recognisable structure of product news, emotional reaction, general commentary, creative-industry
-discussion, personal reflection, and -- usefully -- automated noise, which together describe the
-shape of the AI conversation on Bluesky better than any single summary statistic could.
